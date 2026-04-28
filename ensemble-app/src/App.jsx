@@ -235,13 +235,13 @@ function BulkImportModal({onClose,onAdd,isAdmin}) {
   });
 
   const extractFromText=async text=>{
-    const res=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:4000,
+    const res=await fetch("/api/claude",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({
         system:`Extract concert listings from text. Return ONLY a raw JSON array where each element has: title, conductor, soloists (array of {name,role}), date (YYYY-MM-DD or ""), time (HH:MM 24h), venue, city, detailUrl, program (array of strings), tiers (array of {label,price}), notes. Extract ALL concerts. List every named soloist.`,
-        messages:[{role:"user",content:`Extract all concerts from this text:\n\n${text.slice(0,18000)}`}]})});
+        user:`Extract all concerts from this text:\n\n${text.slice(0,18000)}`})});
     const d=await res.json();
-    if(d.error)throw new Error(d.error.message||"Claude API error");
-    const raw=d.content?.[0]?.text||"[]";
+    if(d.error)throw new Error(d.error||"Extract failed");
+    const raw=d.content||"[]";
     let p=JSON.parse(raw.replace(/```json|```/g,"").trim());
     if(!Array.isArray(p))p=[p];
     return p;
@@ -489,13 +489,12 @@ function SingleConcertModal({onClose,onSubmit,isAdmin,editData=null}) {
       const proxy=`https://api.allorigins.win/get?url=${encodeURIComponent(url)}`;
       const r=await fetch(proxy); const d=await r.json();
       const html=(d.contents||"").slice(0,14000);
-      const api=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",
+      const api=await fetch("/api/claude",{method:"POST",
         headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:1200,
-          system:`Extract a SINGLE concert from HTML. Return ONLY raw JSON with: title, conductor, soloists (array of {name,role}), date (YYYY-MM-DD), time (HH:MM 24h), venue, city, detailUrl, program (array), tiers (array of {label,price}), notes.`,
-          messages:[{role:"user",content:`URL: ${url}\nHTML:\n${html}`}]})});
+        body:JSON.stringify({system:`Extract a SINGLE concert from HTML. Return ONLY raw JSON with: title, conductor, soloists (array of {name,role}), date (YYYY-MM-DD), time (HH:MM 24h), venue, city, detailUrl, program (array), tiers (array of {label,price}), notes.`,user:`URL: ${url}\nHTML:\n${html}`})});
       const ad=await api.json();
-      const raw=ad.content?.[0]?.text||"{}";
+      if(ad.error)throw new Error(ad.error);
+      const raw=ad.content||"{}";
       const p=JSON.parse(raw.replace(/```json|```/g,"").trim());
       setForm({title:p.title||"",conductor:p.conductor||"",soloists:p.soloists||[],
         date:p.date||"",time:p.time||"19:30",venue:p.venue||"",city:p.city||"",
@@ -859,7 +858,7 @@ export default function App() {
     justifyContent:"center",color:G.textDim,fontFamily:"'Jost',sans-serif",fontSize:13}}>Loading…</div>;
 
   const isAdmin=currentUser===members[0];
-  const approved=concerts.filter(c=>c.status==="approved");
+  const approved=concerts.filter(c=>c.status==="approved").sort((a,b)=>a.date<b.date?-1:a.date>b.date?1:0);
   const pending=concerts.filter(c=>c.status==="pending");
   const myTickets=approved.filter(c=>c.interest[currentUser]||c.purchases[currentUser]||c.purchases._buyer===currentUser);
 
