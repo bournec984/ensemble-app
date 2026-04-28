@@ -61,18 +61,22 @@ function dbToConcert(row, interestRows, purchaseRows) {
 }
 
 async function loadAllData() {
-  const [concerts, interestRows, purchaseRows] = await Promise.all([
-    sb.get("concerts", "?order=date.asc"),
-    sb.get("interest"),
-    sb.get("purchases"),
-  ]);
-  if(!Array.isArray(concerts)) return [];
-  return concerts.map(r => dbToConcert(r, interestRows||[], purchaseRows||[]));
+  try {
+    const [concerts, interestRows, purchaseRows] = await Promise.all([
+      sb.get("concerts", "?order=date.asc"),
+      sb.get("interest"),
+      sb.get("purchases"),
+    ]);
+    if(!Array.isArray(concerts)) return [];
+    return concerts.map(r => dbToConcert(r, interestRows||[], purchaseRows||[]));
+  } catch { return []; }
 }
 
 async function loadMembers() {
-  const rows = await sb.get("members", "?order=position.asc");
-  return Array.isArray(rows) && rows.length ? rows.map(r=>r.name) : DEFAULT_MEMBERS;
+  try {
+    const rows = await sb.get("members", "?order=position.asc");
+    return Array.isArray(rows) && rows.length ? rows.map(r=>r.name) : DEFAULT_MEMBERS;
+  } catch { return DEFAULT_MEMBERS; }
 }
 
 async function saveMembers(names) {
@@ -977,14 +981,31 @@ export default function App() {
   useEffect(()=>{
     const saved=localStorage.getItem("ensemble_user");
     if(saved) setCurrentUser(saved);
-    loadAllData().then(d=>setConcerts(d));
-    loadMembers().then(m=>setMembers(m));
+    // Load with timeout fallback
+    const timeout=setTimeout(()=>setConcerts(prev=>prev===null?[]:prev),6000);
+    Promise.all([loadAllData(),loadMembers()])
+      .then(([d,m])=>{
+        clearTimeout(timeout);
+        setConcerts(d||[]);
+        if(m?.length) setMembers(m);
+      })
+      .catch(()=>{ clearTimeout(timeout); setConcerts([]); });
+    return ()=>clearTimeout(timeout);
   },[]);
   useEffect(()=>{if(currentUser)localStorage.setItem("ensemble_user",currentUser);},[currentUser]);
 
   if(!currentUser) return <UserPicker onSelect={u=>setCurrentUser(u)} members={members} onEditMembers={()=>setModal("members")}/>;
-  if(concerts===null) return <div style={{minHeight:"100vh",background:G.bg,display:"flex",alignItems:"center",
-    justifyContent:"center",color:G.textDim,fontFamily:"'Jost',sans-serif",fontSize:13}}>Loading…</div>;
+  if(concerts===null) return(
+    <div style={{minHeight:"100vh",background:G.bg,display:"flex",flexDirection:"column",alignItems:"center",
+      justifyContent:"center",color:G.textDim,fontFamily:"'Jost',sans-serif",gap:16}}>
+      <style>{css}</style>
+      <div style={{fontSize:28,animation:"spin 2s linear infinite",display:"inline-block"}}>◎</div>
+      <div style={{fontSize:13,letterSpacing:1}}>Loading concerts…</div>
+      <div style={{fontSize:11,color:G.textFaint,maxWidth:280,textAlign:"center",lineHeight:1.6}}>
+        If this takes more than a few seconds, check your Supabase connection.
+      </div>
+    </div>
+  );
 
   const isAdmin=currentUser===members[0];
   const approved=concerts.filter(c=>c.status==="approved").sort((a,b)=>a.date<b.date?-1:a.date>b.date?1:0);
