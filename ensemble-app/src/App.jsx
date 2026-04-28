@@ -13,9 +13,72 @@ const G = {
 };
 
 const DEFAULT_MEMBERS = ["Alex","Bea","Chris","Dana","Eve","Felix"];
-const STORE_KEY   = "ensemble_concerts_v3";
-const USERS_KEY   = "ensemble_users_v1";
-const MEMBERS_KEY = "ensemble_members_v1";
+const SUPABASE_URL = "https://ethafodeytsryklebbuv.supabase.co";
+const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImV0aGFmb2RleXRzcnlrbGViYnV2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzczNzU4OTEsImV4cCI6MjA5Mjk1MTg5MX0.e6DGVBoQWJLJ09nvTlQqegRiRfKQBDxVaOtCa3QuWe8";
+
+// ── Supabase client ───────────────────────────────────────────────────────────
+const sb = {
+  headers: {"apikey": SUPABASE_KEY, "Authorization": "Bearer "+SUPABASE_KEY,
+    "Content-Type": "application/json", "Prefer": "return=representation"},
+  async get(table, query="") {
+    const r = await fetch(SUPABASE_URL+"/rest/v1/"+table+query, {headers: this.headers});
+    return r.json();
+  },
+  async post(table, body) {
+    const r = await fetch(SUPABASE_URL+"/rest/v1/"+table, {method:"POST", headers: this.headers, body: JSON.stringify(body)});
+    return r.json();
+  },
+  async patch(table, query, body) {
+    const r = await fetch(SUPABASE_URL+"/rest/v1/"+table+query, {method:"PATCH", headers: this.headers, body: JSON.stringify(body)});
+    return r.json();
+  },
+  async del(table, query) {
+    await fetch(SUPABASE_URL+"/rest/v1/"+table+query, {method:"DELETE", headers: this.headers});
+  },
+};
+
+// ── Data helpers ──────────────────────────────────────────────────────────────
+function dbToConcert(row, interestRows, purchaseRows) {
+  const interest = {};
+  interestRows.filter(i=>i.concert_id===row.id).forEach(i=>interest[i.user_name]=true);
+  const purchases = {};
+  purchaseRows.filter(p=>p.concert_id===row.id).forEach(p=>{
+    purchases[p.user_name] = {tier:p.tier, price:p.price};
+    if(!purchases._buyer && p.buyer) purchases._buyer = p.buyer;
+  });
+  const paidStatus = {};
+  purchaseRows.filter(p=>p.concert_id===row.id && p.paid).forEach(p=>paidStatus[p.user_name]=true);
+  return {
+    id: row.id, status: row.status,
+    title: row.title, conductor: row.conductor||"",
+    soloists: row.soloists||[], date: row.date||"", time: row.time||"19:30",
+    venue: row.venue||"", city: row.city||"",
+    url: row.url||"", detailUrl: row.detail_url||"",
+    program: row.program||[], tiers: row.tiers||[],
+    submittedBy: row.submitted_by||"", notes: row.notes||"",
+    interest, purchases, paidStatus,
+  };
+}
+
+async function loadAllData() {
+  const [concerts, interestRows, purchaseRows] = await Promise.all([
+    sb.get("concerts", "?order=date.asc"),
+    sb.get("interest"),
+    sb.get("purchases"),
+  ]);
+  if(!Array.isArray(concerts)) return [];
+  return concerts.map(r => dbToConcert(r, interestRows||[], purchaseRows||[]));
+}
+
+async function loadMembers() {
+  const rows = await sb.get("members", "?order=position.asc");
+  return Array.isArray(rows) && rows.length ? rows.map(r=>r.name) : DEFAULT_MEMBERS;
+}
+
+async function saveMembers(names) {
+  await sb.del("members", "?position=gte.0");
+  if(names.length) await sb.post("members", names.map((nm,i)=>({name:nm, position:i})));
+}
 
 const css = `
 @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,500;0,700;1,400;1,500&family=Jost:wght@300;400;500;600&display=swap');
@@ -37,13 +100,7 @@ select option{background:#1A1608}
 `;
 
 // ── Storage ──────────────────────────────────────────────────────────────────
-async function loadStore(key) {
-  try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : null; }
-  catch { return null; }
-}
-async function saveStore(key, data) {
-  try { localStorage.setItem(key, JSON.stringify(data)); } catch {}
-}
+
 
 // ── Seed ─────────────────────────────────────────────────────────────────────
 const SEED = [
@@ -918,13 +975,12 @@ export default function App() {
   const showToast=(msg,type="ok")=>{setToast({msg,type});setTimeout(()=>setToast(null),3500);};
 
   useEffect(()=>{
-    loadStore(STORE_KEY).then(d=>setConcerts(d||SEED));
-    loadStore(USERS_KEY).then(d=>{if(d?.lastUser)setCurrentUser(d.lastUser);});
-    loadStore(MEMBERS_KEY).then(d=>{if(d?.members?.length)setMembers(d.members);});
+    const saved=localStorage.getItem("ensemble_user");
+    if(saved) setCurrentUser(saved);
+    loadAllData().then(d=>setConcerts(d));
+    loadMembers().then(m=>setMembers(m));
   },[]);
-  useEffect(()=>{if(concerts!==null)saveStore(STORE_KEY,concerts);},[concerts]);
-  useEffect(()=>{if(currentUser)saveStore(USERS_KEY,{lastUser:currentUser});},[currentUser]);
-  useEffect(()=>{saveStore(MEMBERS_KEY,{members});},[members]);
+  useEffect(()=>{if(currentUser)localStorage.setItem("ensemble_user",currentUser);},[currentUser]);
 
   if(!currentUser) return <UserPicker onSelect={u=>setCurrentUser(u)} members={members} onEditMembers={()=>setModal("members")}/>;
   if(concerts===null) return <div style={{minHeight:"100vh",background:G.bg,display:"flex",alignItems:"center",
@@ -935,40 +991,104 @@ export default function App() {
   const pending=concerts.filter(c=>c.status==="pending");
   const myTickets=approved.filter(c=>c.interest[currentUser]||c.purchases[currentUser]||c.purchases._buyer===currentUser);
 
-  const upd=fn=>setConcerts(prev=>prev.map(fn));
-  const toggleInterest=cid=>upd(c=>c.id!==cid?c:{...c,interest:{...c.interest,[currentUser]:c.interest[currentUser]?undefined:true}});
-  const markPaid=(cid,f)=>upd(c=>c.id!==cid?c:{...c,paidStatus:{...c.paidStatus,[f]:true}});
-  const approve=cid=>upd(c=>c.id!==cid?c:{...c,status:"approved"});
-  const reject=cid=>setConcerts(prev=>prev.filter(c=>c.id!==cid));
+  const refresh=()=>loadAllData().then(d=>setConcerts(d));
 
-  const addOne=data=>{
-    const n={...data,id:uid(),status:isAdmin?"approved":"pending",
-      interest:{},purchases:{},paidStatus:{},submittedBy:currentUser};
-    setConcerts(prev=>[...prev,n]);
+  const toggleInterest=async(cid)=>{
+    const c=concerts.find(x=>x.id===cid);
+    if(!c)return;
+    if(c.interest[currentUser]){
+      await sb.del("interest","?concert_id=eq."+cid+"&user_name=eq."+currentUser);
+    } else {
+      await sb.post("interest",{concert_id:cid,user_name:currentUser});
+    }
+    refresh();
+  };
+
+  const markPaid=async(cid,f)=>{
+    await sb.patch("purchases","?concert_id=eq."+cid+"&user_name=eq."+f,{paid:true});
+    refresh();
+  };
+
+  const approve=async(cid)=>{
+    await sb.patch("concerts","?id=eq."+cid,{status:"approved"});
+    refresh();
+  };
+
+  const reject=async(cid)=>{
+    if(!window.confirm("Remove this concert?"))return;
+    await sb.del("concerts","?id=eq."+cid);
+    refresh();
+  };
+
+  const addOne=async(data)=>{
+    const id=uid();
+    await sb.post("concerts",{
+      id, status:isAdmin?"approved":"pending",
+      title:data.title, conductor:data.conductor||"",
+      soloists:data.soloists||[], date:data.date||"", time:data.time||"19:30",
+      venue:data.venue||"", city:data.city||"",
+      url:data.url||"", detail_url:data.detailUrl||"",
+      program:data.program||[], tiers:data.tiers||[],
+      submitted_by:currentUser, notes:data.notes||"",
+    });
     setModal(null);
     showToast(isAdmin?"Concert added.":"Submitted for approval.");
+    refresh();
   };
-  const addBulk=dataArr=>{
-    const ns=dataArr.map(data=>({...data,id:uid(),status:isAdmin?"approved":"pending",
-      interest:{},purchases:{},paidStatus:{},submittedBy:currentUser}));
-    setConcerts(prev=>[...prev,...ns]);
-    showToast(isAdmin?`${ns.length} concerts added.`:`${ns.length} concerts submitted for approval.`);
+
+  const addBulk=async(dataArr)=>{
+    const rows=dataArr.map(data=>({
+      id:uid(), status:isAdmin?"approved":"pending",
+      title:data.title, conductor:data.conductor||"",
+      soloists:data.soloists||[], date:data.date||"", time:data.time||"19:30",
+      venue:data.venue||"", city:data.city||"",
+      url:data.url||"", detail_url:data.detailUrl||"",
+      program:data.program||[], tiers:data.tiers||[],
+      submitted_by:currentUser, notes:data.notes||"",
+    }));
+    for(let i=0;i<rows.length;i+=20) await sb.post("concerts",rows.slice(i,i+20));
+    showToast(isAdmin?rows.length+" concerts added.":rows.length+" concerts submitted for approval.");
+    refresh();
   };
-  const saveEdit=data=>{
-    upd(c=>c.id!==editTarget.id?c:{...c,...data});
+
+  const saveEdit=async(data)=>{
+    await sb.patch("concerts","?id=eq."+editTarget.id,{
+      title:data.title, conductor:data.conductor||"",
+      soloists:data.soloists||[], date:data.date||"", time:data.time||"19:30",
+      venue:data.venue||"", city:data.city||"",
+      url:data.url||"", detail_url:data.detailUrl||"",
+      program:data.program||[], tiers:data.tiers||[],
+      notes:data.notes||"",
+    });
     setEditTarget(null);setModal(null);
     showToast("Concert updated.");
+    refresh();
   };
-  const deleteConcert=cid=>{
+
+  const deleteConcert=async(cid)=>{
     if(!window.confirm("Remove this concert?"))return;
-    setConcerts(prev=>prev.filter(c=>c.id!==cid));
+    await sb.del("concerts","?id=eq."+cid);
     setExpandedId(null);
     showToast("Concert removed.");
+    refresh();
   };
-  const recordPurchase=(cid,asgn)=>{
-    upd(c=>c.id!==cid?c:{...c,purchases:{...c.purchases,...asgn,_buyer:currentUser}});
+
+  const recordPurchase=async(cid,asgn)=>{
+    const buyer=currentUser;
+    const rows=Object.entries(asgn).map(([user_name,{tier,price}])=>({
+      concert_id:cid, user_name, buyer, tier, price, paid:user_name===buyer,
+    }));
+    for(const row of rows){
+      const existing=await sb.get("purchases","?concert_id=eq."+cid+"&user_name=eq."+row.user_name);
+      if(Array.isArray(existing)&&existing.length){
+        await sb.patch("purchases","?concert_id=eq."+cid+"&user_name=eq."+row.user_name,row);
+      } else {
+        await sb.post("purchases",row);
+      }
+    }
     setBuyId(null);
     showToast("Purchase recorded. Use 'Notify owing' to send payment reminders.");
+    refresh();
   };
 
   const buyC=concerts.find(c=>c.id===buyId);
@@ -1004,7 +1124,7 @@ export default function App() {
           <Btn size="sm" onClick={()=>setModal("add")}>+ Add Concert</Btn>
         </div>
         <div style={{display:"flex",alignItems:"center",gap:8,paddingLeft:12,borderLeft:`1px solid ${G.border}`,
-          cursor:"pointer"}} onClick={()=>{saveStore(USERS_KEY,{lastUser:null});setCurrentUser(null);}}>
+          cursor:"pointer"}} onClick={()=>{localStorage.removeItem("ensemble_user");setCurrentUser(null);}}>
           <Avatar name={currentUser} size={26}/>
           <div><div style={{fontSize:12,color:G.cream}}>{currentUser}</div>
             {isAdmin&&<div style={{fontSize:9,letterSpacing:1.5,color:G.goldDim,textTransform:"uppercase"}}>Organiser</div>}
@@ -1105,7 +1225,7 @@ export default function App() {
     </main>
 
     {/* Modals */}
-    {modal==="members"&&<MembersModal members={members} currentUser={currentUser} onClose={()=>setModal(null)} onSave={m=>{setMembers(m);setModal(null);showToast("Group members updated.");}} />}
+    {modal==="members"&&<MembersModal members={members} currentUser={currentUser} onClose={()=>setModal(null)} onSave={async m=>{await saveMembers(m);setMembers(m);setModal(null);showToast("Group members updated.");}} />}
     {modal==="bulk"&&<BulkImportModal onClose={()=>setModal(null)} onAdd={addBulk} isAdmin={isAdmin}/>}
     {modal==="add"&&<SingleConcertModal onClose={()=>setModal(null)} onSubmit={addOne} isAdmin={isAdmin}/>}
     {modal==="edit"&&editTarget&&<SingleConcertModal onClose={()=>{setModal(null);setEditTarget(null);}} onSubmit={saveEdit} isAdmin={isAdmin} editData={editTarget}/>}
